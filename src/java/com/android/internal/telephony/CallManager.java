@@ -81,6 +81,7 @@ public final class CallManager {
     private static final int EVENT_SUPP_SERVICE_FAILED = 117;
     private static final int EVENT_SERVICE_STATE_CHANGED = 118;
     private static final int EVENT_POST_DIAL_CHARACTER = 119;
+    private static final int EVENT_SUPP_SERVICE_NOTIFY = 120;
 
     // Singleton instance
     private static final CallManager INSTANCE = new CallManager();
@@ -104,6 +105,8 @@ public final class CallManager {
     private Phone mDefaultPhone;
 
     private boolean mSpeedUpAudioForMtCall = false;
+
+    private boolean mRingVolumeReceiverIsRegistered = false;
 
     // state registrants
     protected final RegistrantList mPreciseCallStateRegistrants
@@ -161,6 +164,9 @@ public final class CallManager {
     = new RegistrantList();
 
     protected final RegistrantList mSuppServiceFailedRegistrants
+    = new RegistrantList();
+
+    protected final RegistrantList mSuppServiceNotificationRegistrants
     = new RegistrantList();
 
     protected final RegistrantList mServiceStateChangedRegistrants
@@ -442,11 +448,13 @@ public final class CallManager {
                 break;
         }
 
-        if (state == PhoneConstants.State.RINGING && lastAudioMode != AudioManager.MODE_RINGTONE) {
+        if (!mRingVolumeReceiverIsRegistered && state == PhoneConstants.State.RINGING) {
             context.registerReceiver(mRingVolumeChangeReceiver,
                     new IntentFilter(AudioManager.VOLUME_CHANGED_ACTION));
-        } else if (state != PhoneConstants.State.RINGING && lastAudioMode == AudioManager.MODE_RINGTONE) {
+            mRingVolumeReceiverIsRegistered = true;
+        } else if (mRingVolumeReceiverIsRegistered && state != PhoneConstants.State.RINGING) {
             context.unregisterReceiver(mRingVolumeChangeReceiver);
+            mRingVolumeReceiverIsRegistered = false;
         }
     }
 
@@ -457,9 +465,9 @@ public final class CallManager {
                 // make user aware of an incoming call by
                 // attenuating the music he may be listening to
                 ? AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
-                // if we're going to play the ring tone, silence
-                // other sound sources
-                : AudioManager.AUDIOFOCUS_GAIN_TRANSIENT;
+                        // if we're going to play the ring tone, silence
+                        // other sound sources
+                        : AudioManager.AUDIOFOCUS_GAIN_TRANSIENT;
 
         if (VDBG) Log.d(LOG_TAG, "requestAudioFocus on STREAM_RING");
         audioManager.requestAudioFocusForCall(AudioManager.STREAM_RING, hint);
@@ -494,6 +502,11 @@ public final class CallManager {
             phone.setOnPostDialCharacter(mHandler, EVENT_POST_DIAL_CHARACTER, null);
         }
 
+        // for events supported only by GSM phone
+        if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+            phone.registerForSuppServiceNotification(mHandler, EVENT_SUPP_SERVICE_NOTIFY, null);
+        }
+
         // for events supported only by CDMA phone
         if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA ){
             phone.registerForCdmaOtaStatusChange(mHandler, EVENT_CDMA_OTA_STATUS_CHANGE, null);
@@ -525,6 +538,11 @@ public final class CallManager {
         if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM ||
                 phone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA) {
             phone.setOnPostDialCharacter(null, EVENT_POST_DIAL_CHARACTER, null);
+        }
+
+        // for events supported only by GSM phone
+        if (phone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+            phone.unregisterForSuppServiceNotification(mHandler);
         }
 
         // for events supported only by CDMA phone
@@ -586,7 +604,7 @@ public final class CallManager {
             int currMode = audioManager.getMode();
             if ((currMode != AudioManager.MODE_IN_CALL) && !(ringingPhone instanceof SipPhone)) {
                 Log.d(LOG_TAG, "setAudioMode Setting audio mode from " +
-                                currMode + " to " + AudioManager.MODE_IN_CALL);
+                        currMode + " to " + AudioManager.MODE_IN_CALL);
                 audioManager.setMode(AudioManager.MODE_IN_CALL);
                 mSpeedUpAudioForMtCall = true;
             }
@@ -698,7 +716,7 @@ public final class CallManager {
                 if (foregroundPhone == backgroundPhone) {
                     getActiveFgCall().hangup();
                 } else {
-                // the call to be hangup and resumed belongs to different phones
+                    // the call to be hangup and resumed belongs to different phones
                     getActiveFgCall().hangup();
                     switchHoldingAndActive(heldCall);
                 }
@@ -861,16 +879,16 @@ public final class CallManager {
                 && !hasRingingCall
                 && !allLinesTaken
                 && ((fgCallState == Call.State.ACTIVE)
-                    || (fgCallState == Call.State.IDLE)
-                    || (fgCallState == Call.State.DISCONNECTED)));
+                        || (fgCallState == Call.State.IDLE)
+                        || (fgCallState == Call.State.DISCONNECTED)));
 
         if (result == false) {
             Log.d(LOG_TAG, "canDial serviceState=" + serviceState
-                            + " hasRingingCall=" + hasRingingCall
-                            + " hasActiveCall=" + hasActiveCall
-                            + " hasHoldingCall=" + hasHoldingCall
-                            + " allLinesTaken=" + allLinesTaken
-                            + " fgCallState=" + fgCallState);
+                    + " hasRingingCall=" + hasRingingCall
+                    + " hasActiveCall=" + hasActiveCall
+                    + " hasHoldingCall=" + hasHoldingCall
+                    + " allLinesTaken=" + allLinesTaken
+                    + " fgCallState=" + fgCallState);
         }
         return result;
     }
@@ -1353,6 +1371,27 @@ public final class CallManager {
     }
 
     /**
+     * Register for supplementary service notifications.
+     * Message.obj will contain an AsyncResult.
+     *
+     * @param h Handler that receives the notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    public void registerForSuppServiceNotification(Handler h, int what, Object obj){
+        mSuppServiceNotificationRegistrants.addUnique(h, what, obj);
+    }
+
+    /**
+     * Unregister for supplementary service notifications.
+     *
+     * @param h Handler to be removed from the registrant list.
+     */
+    public void unregisterForSuppServiceNotification(Handler h){
+        mSuppServiceNotificationRegistrants.remove(h);
+    }
+
+    /**
      * Register for notifications when a sInCall VoicePrivacy is enabled
      *
      * @param h Handler that receives the notification message.
@@ -1606,7 +1645,7 @@ public final class CallManager {
         if (call == null) {
             call = (mDefaultPhone == null)
                     ? null
-                    : mDefaultPhone.getForegroundCall();
+                            : mDefaultPhone.getForegroundCall();
         }
         return call;
     }
@@ -1643,7 +1682,7 @@ public final class CallManager {
         if (call == null) {
             call = (mDefaultPhone == null)
                     ? null
-                    : mDefaultPhone.getBackgroundCall();
+                            : mDefaultPhone.getBackgroundCall();
         }
         return call;
     }
@@ -1666,7 +1705,7 @@ public final class CallManager {
         if (call == null) {
             call = (mDefaultPhone == null)
                     ? null
-                    : mDefaultPhone.getRingingCall();
+                            : mDefaultPhone.getRingingCall();
         }
         return call;
     }
@@ -1860,6 +1899,10 @@ public final class CallManager {
                 case EVENT_SUPP_SERVICE_FAILED:
                     if (VDBG) Log.d(LOG_TAG, " handleMessage (EVENT_SUPP_SERVICE_FAILED)");
                     mSuppServiceFailedRegistrants.notifyRegistrants((AsyncResult) msg.obj);
+                    break;
+                case EVENT_SUPP_SERVICE_NOTIFY:
+                    if (VDBG) Log.d(LOG_TAG, " handleMessage (EVENT_SUPP_SERVICE_NOTIFICATION)");
+                    mSuppServiceNotificationRegistrants.notifyRegistrants((AsyncResult) msg.obj);
                     break;
                 case EVENT_SERVICE_STATE_CHANGED:
                     if (VDBG) Log.d(LOG_TAG, " handleMessage (EVENT_SERVICE_STATE_CHANGED)");
